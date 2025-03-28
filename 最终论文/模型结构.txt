@@ -1,0 +1,44 @@
+class Net(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.TCNModel = TCNModel()         # 用于处理视频特征的时序卷积网络
+        self.Conv1dModel = ConvNet1d()       # 对视频特征进行全连接变换
+        self.Regress = Regress2()            # 最后的回归或分类模块
+
+        self.softmax = torch.nn.Softmax(dim=1)  # softmax激活，用于输出概率分布
+        self.conv = nn.Conv1d(in_channels=114, out_channels=186, kernel_size=1, padding=0, stride=1)
+        # 1x1卷积，用于调整特征通道，从114到186
+
+        self.mhca = Multi_CrossAttention(hidden_size=128, all_head_size=128, head_num=4)
+        # 多头交叉注意力模块，参数设定表示将128维特征分成4个头，每个头32维（128/4）
+
+        self.norm = nn.LayerNorm(128*2)   # LayerNorm正则化层，对拼接后特征（维度128*2）进行归一化
+        self.FFN = FeedForward(dim_in=186, hidden_dim=186*2, dim_out=186)
+        # 前馈网络，用于对特征进行非线性变换，保持输入输出维度为186，中间扩展到372
+
+        self.norm2 = nn.LayerNorm(128*2)   # 第二个LayerNorm层
+        self.pooling = nn.AdaptiveAvgPool1d(1)  # 自适应平均池化，将时间步维度降为1
+ 
+   def forward(self, inputVideo, inputAudio，inputModality3):
+        inputVideo = self.TCNModel(inputVideo)
+        # 将视频输入通过 TCN 模型提取时序特征
+        outputConv1dVideo = self.Conv1dModel(inputVideo)
+        # 对视频特征经过全连接变换，调整特征维度
+        outputConv1dVideo = self.conv(outputConv1dVideo)
+        # 使用1x1卷积调整视频特征通道数，从114变成186
+        output1, output2 = self.mhca(outputConv1dVideo, inputAudio)
+        # 利用多头交叉注意力模块，将视频特征、音频特征、第三特征进行交互，分别输出两组注意力融合结果
+        outputFeature = torch.cat((output1, output2), dim=2)
+        # 将两组特征在特征维度上拼接，形成融合后的特征
+        outputFeature = self.FFN(self.norm(outputFeature)) + outputFeature
+        # 先对拼接特征做LayerNorm归一化，然后通过前馈网络FFN处理，并与原特征做残差相加
+        output = self.norm2(outputFeature)
+        # 再次归一化
+        output = self.pooling(output).reshape(output.shape[0], -1)
+        # 自适应池化降采样（将时序维度降为1），并reshape为二维张量，便于后续全连接处理
+        result = self.Regress(output)
+        # 通过回归模块（或分类模块）生成最终结果
+        result = result.squeeze(-1)
+        result = self.softmax(result)
+        # 对输出进行squeeze和softmax，最终输出概率分布
+        return result
